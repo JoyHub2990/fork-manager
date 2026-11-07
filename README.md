@@ -57,7 +57,7 @@ You'll get four options:
 
 | Option | Description |
 |--------|-------------|
-| `dry_run` | Read-only preview: shows what would be fast-forwarded or turned into a PR |
+| `dry_run` | Read-only preview: shows what would be synced or turned into a PR |
 | `force_sync` | No effect — kept for compatibility, forks are never force-overwritten |
 | `exclude_repos` | Comma-separated list of repo names to skip this run |
 | `only_repos` | Comma-separated list of repos to sync (empty = all forks) |
@@ -81,15 +81,16 @@ Your commits are never overwritten and never merged automatically — you decide
 
 | Symbol | Meaning |
 |--------|---------|
-| `⏩ [FAST-FORWARD]` | No own commits; branch was fast-forwarded |
+| `✅ [SYNCED]` | No own commits; branch was fast-forwarded |
 | `🔀 [PR CREATED]` | Diverged fork; a pull request was opened, no automatic merge |
 | `🔁 [PR EXISTS]` | Diverged fork; an existing open PR was reused |
-| `✅ [UP TO DATE]` | Already identical to upstream |
+| `➖ [UP TO DATE]` | Already identical to upstream |
 | `⏫ [AHEAD ONLY]` | Fork has own commits but upstream has nothing new to pull |
 | `🛑 [AUTO MERGE]` | Unexpected: GitHub merged despite the pre-check — inspect manually |
 | `⚠️ [CONFLICT]` | Real merge conflict (HTTP 409); a PR is created for manual resolution |
 | `🚧 [BLOCKED]` | Fast-forward refused because the PAT cannot push workflow files; falls back to a PR |
-| `⏭ [SKIPPED]` / `[EXCLUDED]` | Skipped by API, unknown compare status, or exclusion list |
+| `⏭ [EXCLUDED]` | Explicitly excluded via `exclude_repos` / `PERMANENT_EXCLUDES` |
+| `⏭ [SKIPPED]` | API returned 422 or an unknown compare status — no action taken; listed at the end of the log |
 | `❌ [ERROR]` | API error |
 | `🔍 [WOULD SYNC]` / `[WOULD PR]` | Dry-run preview |
 
@@ -147,34 +148,40 @@ These will be skipped on every run, both scheduled and manual.
 ║        fork-manager by ModelNorth       ║
 ╚════════════════════════════════════════╝
 
-Legend: ⏩ fast-forward  🔀 PR created  🔁 PR already open  ✅ up to date
-        ⏫ ahead only  🛑 unexpected merge  ⚠️  merge conflict  ⏭  skipped  ❌ error
+Legend: ✅ synced  🔀 PR created  🔁 PR already open  ➖ up to date
+        ⏫ ahead only  🛑 unexpected merge  ⚠️  merge conflict  🚧 workflow blocked
+        ⏭  excluded/skipped  ❌ error
 
 📡 Fetching all forks...
-✅ Found 47 fork(s)
+📋 Found 47 fork(s)
 
-⏩ [FAST-FORWARD] yourname/langchain — Successfully fetched and fast-forwarded from upstream langchain-ai:main.
-✅ [UP TO DATE] yourname/repo-name-1 — already at upstream-owner:main
+✅ [SYNCED] yourname/langchain — Successfully fetched and fast-forwarded from upstream langchain-ai:main.
+➖ [UP TO DATE] yourname/repo-name-1 — already at upstream-owner:main
 ⏫ [AHEAD ONLY] yourname/repo-name-2 — fork has own commits, nothing to pull
 🔀 [DIVERGED]   yourname/YimMenuV2 — own commits found, no automatic merge (YimMenu:enhanced)
 🔀 [PR CREATED]  yourname/YimMenuV2 — #12 https://github.com/yourname/YimMenuV2/pull/12
 🔁 [PR EXISTS]   yourname/custom-fork — #3 https://github.com/yourname/custom-fork/pull/3
 ⏭  [EXCLUDED]   yourname/repo-name
+⏭  [SKIPPED]    yourname/no-upstream — Validation Failed
 
 ╔════════════════════════════════════════╗
 ║              SYNC SUMMARY               ║
 ╚════════════════════════════════════════╝
-⏩ Fast-forwarded:      12
+✅ Synced:              12
 🔀 PR created:          1
 🔁 PR already open:     1
-✅ Up to date:          31
+➖ Up to date:         30
 ⏫ Ahead (nothing):     1
 🛑 Unexpected merges:   0
 ⚠️  Merge conflicts:     0
-⏭  Skipped/excluded:    1
+⏭  Excluded:            1
+⏭  API skipped:         1
 ❌ Errors:              0
 ─────────────────────────────────────────
 📦 Total processed:     47
+
+⏭  Repos skipped by the API (no action was taken — inspect these):
+   • no-upstream
 ```
 
 ---

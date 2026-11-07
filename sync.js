@@ -177,13 +177,13 @@ async function main() {
   if (FORCE_SYNC) console.log("⚡ force_sync is set but has no effect — forks are never force-overwritten\n");
   if (ONLY_LIST.length > 0) console.log(`🎯 Only syncing: ${ONLY_LIST.join(", ")}\n`);
   if (EXCLUDE_LIST.length > 0) console.log(`🚫 Excluded: ${EXCLUDE_LIST.join(", ")}\n`);
-  console.log("Legend: ⏩ fast-forward  🔀 PR created  🔁 PR already open  ✅ up to date");
+  console.log("Legend: ✅ synced  🔀 PR created  🔁 PR already open  ➖ up to date");
   console.log("        ⏫ ahead only  🛑 unexpected merge  ⚠️  merge conflict  🚧 workflow blocked");
-  console.log("        ⏭  skipped  ❌ error\n");
+  console.log("        ⏭  excluded/skipped  ❌ error\n");
 
   console.log("📡 Fetching all forks...");
   const allForks = await getAllForks();
-  console.log(`✅ Found ${allForks.length} fork(s)\n`);
+  console.log(`📋 Found ${allForks.length} fork(s)\n`);
 
   let forks = allForks;
   if (ONLY_LIST.length > 0) {
@@ -205,8 +205,8 @@ async function main() {
   }
 
   const results = {
-    fastForwarded: [], upToDate: [], aheadOnly: [], prCreated: [], prExisting: [],
-    unexpectedMerges: [], conflicts: [], skipped: [], errors: [],
+    synced: [], upToDate: [], aheadOnly: [], prCreated: [], prExisting: [],
+    unexpectedMerges: [], conflicts: [], excluded: [], skipped: [], errors: [],
     plannedSync: [], plannedPr: [],
   };
 
@@ -216,7 +216,7 @@ async function main() {
 
     if (EXCLUDE_LIST.some((entry) => matchesRepo(entry, repoName, ownerLogin))) {
       console.log(`⏭  [EXCLUDED]   ${repoLabel}`);
-      results.skipped.push(repoName);
+      results.excluded.push(repoName);
       await sleep(300);
       continue;
     }
@@ -238,7 +238,7 @@ async function main() {
           results.upToDate.push(repoName);
         }
       } else if (cmp.status === "identical") {
-        console.log(`✅ [UP TO DATE] ${repoLabel} — already at ${head}`);
+        console.log(`➖ [UP TO DATE] ${repoLabel} — already at ${head}`);
         results.upToDate.push(repoName);
       } else if (cmp.status === "behind") {
         console.log(`⏫ [AHEAD ONLY] ${repoLabel} — fork has own commits, nothing to pull from ${head}`);
@@ -250,14 +250,14 @@ async function main() {
           const mergeType = res.body.merge_type ||
             (/fetched and merged/i.test(msg) ? "merge" : /fast-forwarded/i.test(msg) ? "fast-forward" : "");
           if (/not behind|already/i.test(msg) || mergeType === "none") {
-            console.log(`✅ [UP TO DATE] ${repoLabel} — ${msg}`);
+            console.log(`➖ [UP TO DATE] ${repoLabel} — ${msg}`);
             results.upToDate.push(repoName);
           } else if (mergeType === "merge") {
             console.log(`🛑 [AUTO MERGE] ${repoLabel} — merged despite pre-check: ${msg}`);
             results.unexpectedMerges.push(repoName);
           } else {
-            console.log(`⏩ [FAST-FORWARD] ${repoLabel} — ${msg}`);
-            results.fastForwarded.push(repoName);
+            console.log(`✅ [SYNCED]     ${repoLabel} — ${msg}`);
+            results.synced.push(repoName);
           }
         } else if (res.status === 409) {
           console.log(`⚠️  [CONFLICT]   ${repoLabel} — merge conflict, falling back to a pull request`);
@@ -293,19 +293,20 @@ async function main() {
   console.log("║              SYNC SUMMARY               ║");
   console.log("╚════════════════════════════════════════╝");
   if (DRY_RUN) {
-    console.log(`🔍 Would fast-forward:  ${results.plannedSync.length}`);
+    console.log(`🔍 Would sync:          ${results.plannedSync.length}`);
     console.log(`🔍 Would create PR:     ${results.plannedPr.length}`);
-    console.log(`✅ Would be unchanged:  ${results.upToDate.length}`);
+    console.log(`➖ Would be unchanged:  ${results.upToDate.length}`);
   } else {
-    console.log(`⏩ Fast-forwarded:      ${results.fastForwarded.length}`);
+    console.log(`✅ Synced:              ${results.synced.length}`);
     console.log(`🔀 PR created:          ${results.prCreated.length}`);
     console.log(`🔁 PR already open:     ${results.prExisting.length}`);
-    console.log(`✅ Up to date:          ${results.upToDate.length}`);
+    console.log(`➖ Up to date:          ${results.upToDate.length}`);
     console.log(`⏫ Ahead (nothing):     ${results.aheadOnly.length}`);
     console.log(`🛑 Unexpected merges:   ${results.unexpectedMerges.length}`);
     console.log(`⚠️  Merge conflicts:     ${results.conflicts.length}`);
   }
-  console.log(`⏭  Skipped/excluded:    ${results.skipped.length}`);
+  console.log(`⏭  Excluded:            ${results.excluded.length}`);
+  console.log(`⏭  API skipped:         ${results.skipped.length}`);
   console.log(`❌ Errors:              ${results.errors.length}`);
   console.log(`─────────────────────────────────────────`);
   console.log(`📦 Total processed:     ${forks.length}`);
@@ -317,6 +318,10 @@ async function main() {
   if (results.conflicts.length > 0) {
     console.log(`\n⚠️  Repos with a real merge conflict (a PR was created for manual resolution):`);
     results.conflicts.forEach((r) => console.log(`   • ${r}`));
+  }
+  if (results.skipped.length > 0) {
+    console.log(`\n⏭  Repos skipped by the API (no action was taken — inspect these):`);
+    results.skipped.forEach((r) => console.log(`   • ${r}`));
   }
   if (results.errors.length > 0) {
     console.log(`\n❌ Failed repos:`);
