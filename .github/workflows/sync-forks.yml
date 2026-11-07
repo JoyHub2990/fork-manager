@@ -4,19 +4,19 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Read-only preview (shows what would be synced or turned into a PR)"
+        description: "干跑：只读预览，只列出哪些仓库会被同步或转为拉取请求，不做任何改动"
         type: boolean
         default: false
       force_sync:
-        description: "Deprecated / no effect - forks are never force-overwritten"
+        description: "强制同步（已弃用／无效果：永远不会强制覆盖 fork）"
         type: boolean
         default: false
       exclude_repos:
-        description: "Comma-separated repo names to skip (e.g. repo-name-1,repo-name-2)"
+        description: "排除仓库：本次要跳过的仓库名，逗号分隔（例如 YimMenuV2,Cemu）"
         type: string
         default: ""
       only_repos:
-        description: "Only sync these repos (comma-separated names or owner/name; empty = all forks)"
+        description: "仅限仓库：只处理这些仓库，逗号分隔（仓库名或 owner/仓库名；留空 = 全部 fork）"
         type: string
         default: ""
 
