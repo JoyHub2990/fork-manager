@@ -128,12 +128,14 @@ async function ensurePullRequest(ownerLogin, repoName, forkBranch, head, results
   if (existing) {
     console.log(`🔁 [PR EXISTS]   ${ownerLogin}/${repoName} — #${existing.number} ${existing.html_url}`);
     (overrideBucket || results.prExisting).push(repoName);
+    await inspectPR(ownerLogin, repoName, existing, results);
     return;
   }
   const res = await createPull(ownerLogin, repoName, forkBranch, head);
   if (res.status === 201) {
     console.log(`🔀 [PR CREATED]  ${ownerLogin}/${repoName} — #${res.body.number} ${res.body.html_url}`);
     (overrideBucket || results.prCreated).push(repoName);
+    await inspectPR(ownerLogin, repoName, res.body, results);
   } else if (res.status === 422) {
     const msg = res.body?.message || "PR could not be created";
     if (/already exists/i.test(msg)) {
@@ -141,6 +143,7 @@ async function ensurePullRequest(ownerLogin, repoName, forkBranch, head, results
       if (pr) {
         console.log(`🔁 [PR EXISTS]   ${ownerLogin}/${repoName} — #${pr.number} ${pr.html_url}`);
         (overrideBucket || results.prExisting).push(repoName);
+        await inspectPR(ownerLogin, repoName, pr, results);
         return;
       }
     }
@@ -166,6 +169,48 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+async function getPRMergeable(ownerLogin, repoName, prNumber) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const res = await apiRequest("GET", `/repos/${ownerLogin}/${repoName}/pulls/${prNumber}`);
+    if (res.status !== 200) return "unknown";
+    const { mergeable, mergeable_state: state } = res.body || {};
+    if (mergeable === false || state === "dirty") return "conflict";
+    if (mergeable === true) return "clean";
+    if (attempt < 2) await sleep(2000);
+  }
+  return "unknown";
+}
+
+async function ensureConflictLabel(ownerLogin, repoName) {
+  const check = await apiRequest("GET", `/repos/${ownerLogin}/${repoName}/labels/merge-conflict`);
+  if (check.status === 200) return true;
+  const created = await apiRequest("POST", `/repos/${ownerLogin}/${repoName}/labels`, {
+    name: "merge-conflict", color: "ff0000", description: "Resolve conflicts manually",
+  });
+  return created.status === 201 || created.status === 422;
+}
+
+async function labelPR(ownerLogin, repoName, prNumber) {
+  const res = await apiRequest("POST", `/repos/${ownerLogin}/${repoName}/issues/${prNumber}/labels`, {
+    labels: ["merge-conflict"],
+  });
+  return res.status === 200 || res.status === 201;
+}
+
+async function inspectPR(ownerLogin, repoName, pr, results) {
+  if (!pr || !pr.number) return;
+  try {
+    if ((await getPRMergeable(ownerLogin, repoName, pr.number)) !== "conflict") return;
+    console.log(`💥 [PR CONFLICT] ${ownerLogin}/${repoName} — #${pr.number} has conflicts, resolve manually ${pr.html_url || ""}`);
+    results.prConflicts.push(repoName);
+    const labeled = (await ensureConflictLabel(ownerLogin, repoName)) &&
+      (await labelPR(ownerLogin, repoName, pr.number));
+    if (!labeled) console.log(`   ⚠️  Could not add the merge-conflict label (PAT needs "Issues: Read and Write")`);
+  } catch (err) {
+    console.log(`   ⚠️  Could not inspect PR #${pr.number}: ${err.message}`);
+  }
+}
+
 async function main() {
   if (!TOKEN) { console.error("❌ PAT_TOKEN not set."); process.exit(1); }
 
@@ -184,7 +229,7 @@ async function main() {
   if (EXCLUDE_LIST.length > 0) console.log(`🚫 Excluded: ${EXCLUDE_LIST.join(", ")}\n`);
   console.log("Legend: ✅ synced  🔀 PR created  🔁 PR already open  ➖ up to date");
   console.log("        ⏫ ahead only  🛑 unexpected merge  ⚠️  merge conflict  🚧 workflow blocked");
-  console.log("        🟣 merged (legacy mode)  ⏭  excluded/skipped  ❌ error\n");
+  console.log("        🟣 merged (legacy mode)  💥 conflicting PR  ⏭  excluded/skipped  ❌ error\n");
 
   console.log("📡 Fetching all forks...");
   const allForks = await getAllForks();
@@ -211,7 +256,7 @@ async function main() {
 
   const results = {
     synced: [], upToDate: [], aheadOnly: [], prCreated: [], prExisting: [],
-    unexpectedMerges: [], merged: [], conflicts: [], excluded: [], skipped: [], errors: [],
+    unexpectedMerges: [], merged: [], conflicts: [], prConflicts: [], excluded: [], skipped: [], errors: [],
     plannedSync: [], plannedPr: [],
   };
 
@@ -359,6 +404,10 @@ async function main() {
       ? `\n⚠️  Repos with a real merge conflict (legacy mode — resolve manually):`
       : `\n⚠️  Repos with a real merge conflict (a PR was created for manual resolution):`);
     results.conflicts.forEach((r) => console.log(`   • ${r}`));
+  }
+  if (results.prConflicts.length > 0) {
+    console.log(`\n💥 PRs needing manual conflict resolution:`);
+    results.prConflicts.forEach((r) => console.log(`   • ${r}`));
   }
   if (results.skipped.length > 0) {
     console.log(`\n⏭  Repos skipped by the API (no action was taken — inspect these):`);

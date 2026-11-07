@@ -32,6 +32,7 @@ Go to **GitHub → Settings → Developer Settings → Personal Access Tokens �
 - Permissions:
   - `Contents` → Read and Write
   - `Pull requests` → Read and Write (needed to create PRs for diverged forks)
+  - `Issues` → Read and Write (optional; needed to add the `merge-conflict` label to conflicting PRs)
   - `Workflows` → Read and Write (optional; allows a fast-forward to include `.github/workflows/*` changes)
   - `Actions` → Read and Write
   - `Metadata` → Read only
@@ -75,6 +76,8 @@ If a fork's default branch has its own commits, GitHub's `merge-upstream` API wo
 
 Your commits are never overwritten and never merged automatically — you decide in the PR.
 
+After a PR is created (or an existing one is reused), fork-manager polls `GET /repos/{owner}/{repo}/pulls/{number}` for `mergeable`. A PR with `mergeable: false` / `mergeable_state: "dirty"` is logged as `💥 [PR CONFLICT]`, listed at the end of the run, and tagged `merge-conflict` when the PAT allows it. GitHub computes `mergeable` asynchronously, so it is checked up to 3 times (2s apart); if it stays `unknown`, no conflict is reported.
+
 ---
 
 ## Legacy Sync Mode (`force_sync`)
@@ -101,6 +104,7 @@ Despite the name, this mode never force-overwrites or discards your commits — 
 | `⏫ [AHEAD ONLY]` | Fork has own commits but upstream has nothing new to pull |
 | `🛑 [AUTO MERGE]` | Unexpected: GitHub merged despite the pre-check — inspect manually |
 | `🟣 [MERGED]` | Legacy mode: GitHub auto-merged upstream changes into a diverged fork |
+| `💥 [PR CONFLICT]` | PR created/reused but `mergeable: false` — resolve manually; `merge-conflict` label added when the PAT allows it |
 | `⚠️ [CONFLICT]` | Real merge conflict (HTTP 409); a PR is created for manual resolution |
 | `🚧 [BLOCKED]` | Fast-forward refused because the PAT cannot push workflow files; falls back to a PR |
 | `⏭ [EXCLUDED]` | Explicitly excluded via `exclude_repos` / `PERMANENT_EXCLUDES` |
@@ -164,7 +168,7 @@ These will be skipped on every run, both scheduled and manual.
 
 Legend: ✅ synced  🔀 PR created  🔁 PR already open  ➖ up to date
         ⏫ ahead only  🛑 unexpected merge  ⚠️  merge conflict  🚧 workflow blocked
-        🟣 merged (legacy mode)  ⏭  excluded/skipped  ❌ error
+        🟣 merged (legacy mode)  💥 conflicting PR  ⏭  excluded/skipped  ❌ error
 
 📡 Fetching all forks...
 📋 Found 47 fork(s)
