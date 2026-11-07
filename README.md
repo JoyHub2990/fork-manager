@@ -42,7 +42,7 @@ Go to this repo → **Settings → Secrets and variables → Actions → New rep
 
 ### 4. You're done
 
-The workflow runs **every Monday at 09:00 UTC** automatically.
+The workflow runs **every day at 09:00 UTC** automatically.
 
 ---
 

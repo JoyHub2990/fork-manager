@@ -17,7 +17,7 @@ on:
         default: ""
 
   schedule:
-    - cron: "0 9 * * 1"
+    - cron: "0 9 * * *"
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
