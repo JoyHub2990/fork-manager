@@ -9,10 +9,11 @@ Keep every fork in your GitHub account up to date with its upstream — automati
 ## How It Works
 
 1. GitHub Actions fetches a list of **all your forked repos**
-2. For each fork, it calls the GitHub `merge-upstream` API
-3. Forks that are already up to date are skipped cleanly
-4. Forks with conflicts (where you have custom commits) are flagged — not force-overwritten by default
-5. A full summary is printed at the end
+2. For each fork, it reads the parent's default branch and **compares** it with the fork's default branch
+3. `identical`, or the fork is simply ahead → nothing to do
+4. `ahead` (fork has no own commits) → fast-forward via the `merge-upstream` API
+5. `diverged` (fork has its own commits) → **no automatic merge**. A pull request is created instead so you can review and merge manually; an existing open PR is reused
+6. A summary using a distinct symbol for each result type is printed at the end
 
 Everything runs server-side on GitHub — no local cloning, no git commands on your machine.
 
@@ -30,6 +31,7 @@ Go to **GitHub → Settings → Developer Settings → Personal Access Tokens �
 - Repository access: **All repositories**
 - Permissions:
   - `Contents` → Read and Write
+  - `Pull requests` → Read and Write (needed to create PRs for diverged forks)
   - `Actions` → Read and Write
   - `Metadata` → Read only
 
@@ -54,10 +56,40 @@ You'll get four options:
 
 | Option | Description |
 |--------|-------------|
-| `dry_run` | Lists all forks and what would happen — no actual syncing |
-| `force_sync` | Force-overwrites forks that have diverged from upstream |
+| `dry_run` | Read-only preview: shows what would be fast-forwarded or turned into a PR |
+| `force_sync` | No effect — kept for compatibility, forks are never force-overwritten |
 | `exclude_repos` | Comma-separated list of repo names to skip this run |
 | `only_repos` | Comma-separated list of repos to sync (empty = all forks) |
+
+---
+
+## Why Diverged Forks Get a PR
+
+If a fork's default branch has its own commits, GitHub's `merge-upstream` API would silently create a merge commit on that branch. fork-manager never lets that happen:
+
+1. `GET /repos/{owner}/{repo}/compare/{forkBranch}...{upstreamOwner}:{upstreamBranch}` determines the branch relationship
+2. Only when the result is `ahead` (no own commits) is `merge-upstream` called
+3. When the result is `diverged`, the script skips `merge-upstream` and opens `POST /repos/{owner}/{repo}/pulls` with `head: "upstreamOwner:branch"` and `base: forkBranch`
+4. An existing open PR with the same head/base is reused, so repeated runs do not pile up PRs
+
+Your commits are never overwritten and never merged automatically — you decide in the PR.
+
+---
+
+## Log Symbols
+
+| Symbol | Meaning |
+|--------|---------|
+| `⏩ [FAST-FORWARD]` | No own commits; branch was fast-forwarded |
+| `🔀 [PR CREATED]` | Diverged fork; a pull request was opened, no automatic merge |
+| `🔁 [PR EXISTS]` | Diverged fork; an existing open PR was reused |
+| `✅ [UP TO DATE]` | Already identical to upstream |
+| `⏫ [AHEAD ONLY]` | Fork has own commits but upstream has nothing new to pull |
+| `🛑 [AUTO MERGE]` | Unexpected: GitHub merged despite the pre-check — inspect manually |
+| `⚠️ [CONFLICT]` | Real merge conflict (HTTP 409); a PR is created for manual resolution |
+| `⏭ [SKIPPED]` / `[EXCLUDED]` | Skipped by API, unknown compare status, or exclusion list |
+| `❌ [ERROR]` | API error |
+| `🔍 [WOULD SYNC]` / `[WOULD PR]` | Dry-run preview |
 
 ---
 
@@ -97,25 +129,34 @@ These will be skipped on every run, both scheduled and manual.
 ║        fork-manager by ModelNorth       ║
 ╚════════════════════════════════════════╝
 
+Legend: ⏩ fast-forward  🔀 PR created  🔁 PR already open  ✅ up to date
+        ⏫ ahead only  🛑 unexpected merge  ⚠️  merge conflict  ⏭  skipped  ❌ error
+
 📡 Fetching all forks...
 ✅ Found 47 fork(s)
 
-🔄 [SYNCED]     yourname/langchain — Successfully merged 3 commits
-✅ [UP TO DATE] yourname/repo-name-1
-✅ [UP TO DATE] yourname/repo-name-2
+⏩ [FAST-FORWARD] yourname/langchain — Successfully fetched and fast-forwarded from upstream langchain-ai:main.
+✅ [UP TO DATE] yourname/repo-name-1 — already at upstream-owner:main
+⏫ [AHEAD ONLY] yourname/repo-name-2 — fork has own commits, nothing to pull
+🔀 [DIVERGED]   yourname/YimMenuV2 — own commits found, no automatic merge (YimMenu:enhanced)
+🔀 [PR CREATED]  yourname/YimMenuV2 — #12 https://github.com/yourname/YimMenuV2/pull/12
+🔁 [PR EXISTS]   yourname/custom-fork — #3 https://github.com/yourname/custom-fork/pull/3
 ⏭  [EXCLUDED]   yourname/repo-name
-⚠️  [CONFLICT]   yourname/repo-name-1 — has diverged from upstream
 
 ╔════════════════════════════════════════╗
 ║              SYNC SUMMARY               ║
 ╚════════════════════════════════════════╝
-🔄 Synced (new commits pulled):  12
-✅ Already up to date:           32
-⏭  Excluded / skipped:            1
-⚠️  Conflicts (needs manual fix):  2
-❌ Errors:                         0
+⏩ Fast-forwarded:      12
+🔀 PR created:          1
+🔁 PR already open:     1
+✅ Up to date:          31
+⏫ Ahead (nothing):     1
+🛑 Unexpected merges:   0
+⚠️  Merge conflicts:     0
+⏭  Skipped/excluded:    1
+❌ Errors:              0
 ─────────────────────────────────────────
-📦 Total forks processed:        47
+📦 Total processed:     47
 ```
 
 ---

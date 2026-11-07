@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Dry run (list forks but don't actually sync)"
+        description: "Read-only preview (shows what would be synced or turned into a PR)"
         type: boolean
         default: false
       force_sync:
-        description: "Force sync (overwrites diverged forks - use with caution)"
+        description: "Deprecated / no effect - forks are never force-overwritten"
         type: boolean
         default: false
       exclude_repos:
