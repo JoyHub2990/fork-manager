@@ -8,7 +8,7 @@ on:
         type: boolean
         default: false
       force_sync:
-        description: "强制同步（已弃用／无效果：永远不会强制覆盖 fork）"
+        description: "强制同步（旧模式）：直接调用 merge-upstream，不建 PR，GitHub 可能自动合并分叉仓库；不勾选则走 PR 模式"
         type: boolean
         default: false
       exclude_repos:

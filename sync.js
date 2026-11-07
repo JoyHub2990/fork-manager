@@ -174,12 +174,17 @@ async function main() {
   console.log("╚════════════════════════════════════════╝\n");
 
   if (DRY_RUN) console.log("🔍 DRY RUN MODE — read-only, no merges and no PRs\n");
-  if (FORCE_SYNC) console.log("⚡ force_sync is set but has no effect — forks are never force-overwritten\n");
+  if (FORCE_SYNC) {
+    console.log("⚡ LEGACY MODE (force_sync) — direct merge-upstream for every fork; no compare, no PRs");
+    console.log(DRY_RUN
+      ? "   dry_run takes precedence — this run stays read-only\n"
+      : "   GitHub may auto-merge diverged forks; 409 conflicts are reported but not turned into PRs\n");
+  }
   if (ONLY_LIST.length > 0) console.log(`🎯 Only syncing: ${ONLY_LIST.join(", ")}\n`);
   if (EXCLUDE_LIST.length > 0) console.log(`🚫 Excluded: ${EXCLUDE_LIST.join(", ")}\n`);
   console.log("Legend: ✅ synced  🔀 PR created  🔁 PR already open  ➖ up to date");
   console.log("        ⏫ ahead only  🛑 unexpected merge  ⚠️  merge conflict  🚧 workflow blocked");
-  console.log("        ⏭  excluded/skipped  ❌ error\n");
+  console.log("        🟣 merged (legacy mode)  ⏭  excluded/skipped  ❌ error\n");
 
   console.log("📡 Fetching all forks...");
   const allForks = await getAllForks();
@@ -206,7 +211,7 @@ async function main() {
 
   const results = {
     synced: [], upToDate: [], aheadOnly: [], prCreated: [], prExisting: [],
-    unexpectedMerges: [], conflicts: [], excluded: [], skipped: [], errors: [],
+    unexpectedMerges: [], merged: [], conflicts: [], excluded: [], skipped: [], errors: [],
     plannedSync: [], plannedPr: [],
   };
 
@@ -217,6 +222,39 @@ async function main() {
     if (EXCLUDE_LIST.some((entry) => matchesRepo(entry, repoName, ownerLogin))) {
       console.log(`⏭  [EXCLUDED]   ${repoLabel}`);
       results.excluded.push(repoName);
+      await sleep(300);
+      continue;
+    }
+
+    if (FORCE_SYNC && !DRY_RUN) {
+      try {
+        const res = await syncFork(ownerLogin, repoName, forkBranch);
+        if (res.status === 200) {
+          const msg = res.body.message || "";
+          if (/not behind|already/i.test(msg)) {
+            console.log(`➖ [UP TO DATE] ${repoLabel} — ${msg}`);
+            results.upToDate.push(repoName);
+          } else if (/fetched and merged/i.test(msg) || res.body.merge_type === "merge") {
+            console.log(`🟣 [MERGED]     ${repoLabel} — ${msg}`);
+            results.merged.push(repoName);
+          } else {
+            console.log(`✅ [SYNCED]     ${repoLabel} — ${msg}`);
+            results.synced.push(repoName);
+          }
+        } else if (res.status === 409) {
+          console.log(`⚠️  [CONFLICT]   ${repoLabel} — merge conflict (legacy mode, no PR created)`);
+          results.conflicts.push(repoName);
+        } else if (res.status === 422) {
+          console.log(`⏭  [SKIPPED]    ${repoLabel} — ${res.body?.message || ""}`);
+          results.skipped.push(repoName);
+        } else {
+          console.log(`❌ [ERROR]      ${repoLabel} — HTTP ${res.status}: ${res.body?.message || ""}`);
+          results.errors.push(repoName);
+        }
+      } catch (err) {
+        console.log(`❌ [ERROR]      ${repoLabel} — ${err.message}`);
+        results.errors.push(repoName);
+      }
       await sleep(300);
       continue;
     }
@@ -304,6 +342,7 @@ async function main() {
     console.log(`⏫ Ahead (nothing):     ${results.aheadOnly.length}`);
     console.log(`🛑 Unexpected merges:   ${results.unexpectedMerges.length}`);
     console.log(`⚠️  Merge conflicts:     ${results.conflicts.length}`);
+    if (FORCE_SYNC) console.log(`🟣 Merged (auto):       ${results.merged.length}`);
   }
   console.log(`⏭  Excluded:            ${results.excluded.length}`);
   console.log(`⏭  API skipped:         ${results.skipped.length}`);
@@ -316,7 +355,9 @@ async function main() {
     results.unexpectedMerges.forEach((r) => console.log(`   • ${r}`));
   }
   if (results.conflicts.length > 0) {
-    console.log(`\n⚠️  Repos with a real merge conflict (a PR was created for manual resolution):`);
+    console.log(FORCE_SYNC
+      ? `\n⚠️  Repos with a real merge conflict (legacy mode — resolve manually):`
+      : `\n⚠️  Repos with a real merge conflict (a PR was created for manual resolution):`);
     results.conflicts.forEach((r) => console.log(`   • ${r}`));
   }
   if (results.skipped.length > 0) {

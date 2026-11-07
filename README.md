@@ -58,7 +58,7 @@ You'll get four options:
 | Option | Description |
 |--------|-------------|
 | `dry_run` | Read-only preview: shows what would be synced or turned into a PR |
-| `force_sync` | No effect — kept for compatibility, forks are never force-overwritten |
+| `force_sync` | Legacy mode: skip compare and PRs, call `merge-upstream` directly for every fork — GitHub may auto-merge diverged forks. Unchecked (default) uses the PR flow |
 | `exclude_repos` | Comma-separated list of repo names to skip this run |
 | `only_repos` | Comma-separated list of repos to sync (empty = all forks) |
 
@@ -77,6 +77,19 @@ Your commits are never overwritten and never merged automatically — you decide
 
 ---
 
+## Legacy Sync Mode (`force_sync`)
+
+Checking `force_sync` restores the behaviour from before the PR flow existed:
+
+1. No `compare` call and no pull requests — every fork goes straight to `POST /repos/{owner}/{repo}/merge-upstream`
+2. GitHub decides: fast-forward, `Successfully fetched and merged ...` (a real merge commit on a diverged fork), or HTTP 409
+3. 409 is reported as `⚠️ [CONFLICT]` but **no PR is created**; 422 is `⏭ [SKIPPED]`
+4. A merge performed this way is logged as `🟣 [MERGED]` and counted under `Merged (auto)`
+
+Despite the name, this mode never force-overwrites or discards your commits — it only removes the pre-check that stops GitHub from auto-merging. `dry_run` takes precedence if both are checked.
+
+---
+
 ## Log Symbols
 
 | Symbol | Meaning |
@@ -87,6 +100,7 @@ Your commits are never overwritten and never merged automatically — you decide
 | `➖ [UP TO DATE]` | Already identical to upstream |
 | `⏫ [AHEAD ONLY]` | Fork has own commits but upstream has nothing new to pull |
 | `🛑 [AUTO MERGE]` | Unexpected: GitHub merged despite the pre-check — inspect manually |
+| `🟣 [MERGED]` | Legacy mode: GitHub auto-merged upstream changes into a diverged fork |
 | `⚠️ [CONFLICT]` | Real merge conflict (HTTP 409); a PR is created for manual resolution |
 | `🚧 [BLOCKED]` | Fast-forward refused because the PAT cannot push workflow files; falls back to a PR |
 | `⏭ [EXCLUDED]` | Explicitly excluded via `exclude_repos` / `PERMANENT_EXCLUDES` |
@@ -150,7 +164,7 @@ These will be skipped on every run, both scheduled and manual.
 
 Legend: ✅ synced  🔀 PR created  🔁 PR already open  ➖ up to date
         ⏫ ahead only  🛑 unexpected merge  ⚠️  merge conflict  🚧 workflow blocked
-        ⏭  excluded/skipped  ❌ error
+        🟣 merged (legacy mode)  ⏭  excluded/skipped  ❌ error
 
 📡 Fetching all forks...
 📋 Found 47 fork(s)
