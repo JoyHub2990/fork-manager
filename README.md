@@ -50,13 +50,29 @@ The workflow runs **every day at 09:00 UTC** automatically.
 
 Go to **Actions → 🔄 Sync All Forks → Run workflow**
 
-You'll get three options:
+You'll get four options:
 
 | Option | Description |
 |--------|-------------|
 | `dry_run` | Lists all forks and what would happen — no actual syncing |
 | `force_sync` | Force-overwrites forks that have diverged from upstream |
 | `exclude_repos` | Comma-separated list of repo names to skip this run |
+| `only_repos` | Comma-separated list of repos to sync (empty = all forks) |
+
+---
+
+## Only Syncing Specific Repos
+
+Fill `only_repos` to sync just the forks you name, instead of all of them:
+
+```
+langchain,my-org/private-fork,my-fork
+```
+
+- `repo-name` matches a fork with that name under any owner; `owner/repo-name` matches exactly.
+- Leave it empty to sync every fork (default, including scheduled runs).
+- `exclude_repos` and `PERMANENT_EXCLUDES` still take priority, so permanently excluded repos are never synced even if listed here.
+- Names with no matching fork are reported in the log as `No matching fork for: ...`.
 
 ---
 

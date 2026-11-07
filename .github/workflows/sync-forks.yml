@@ -15,6 +15,10 @@ on:
         description: "Comma-separated repo names to skip (e.g. repo-name-1,repo-name-2)"
         type: string
         default: ""
+      only_repos:
+        description: "Only sync these repos (comma-separated names or owner/name; empty = all forks)"
+        type: string
+        default: ""
 
   schedule:
     - cron: "0 9 * * *"
@@ -44,6 +48,7 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
           FORCE_SYNC: ${{ inputs.force_sync || 'false' }}
           EXCLUDE_REPOS: ${{ inputs.exclude_repos }}
+          ONLY_REPOS: ${{ inputs.only_repos }}
           PERMANENT_EXCLUDES: ""
         run: |
           if [ -n "$PERMANENT_EXCLUDES" ] && [ -n "$EXCLUDE_REPOS" ]; then

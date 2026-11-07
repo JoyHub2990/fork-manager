@@ -4,10 +4,22 @@ const TOKEN = process.env.PAT_TOKEN;
 const DRY_RUN = process.env.DRY_RUN === "true";
 const FORCE_SYNC = process.env.FORCE_SYNC === "true";
 
-const EXCLUDE_LIST = (process.env.EXCLUDE_REPOS || "")
-  .split(",")
-  .map((r) => r.trim().toLowerCase())
-  .filter(Boolean);
+function parseRepoList(value) {
+  return (value || "")
+    .split(",")
+    .map((r) => r.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function matchesRepo(entry, repoName, ownerLogin) {
+  const parts = entry.split("/");
+  const name = (parts.length > 1 ? parts[1] : parts[0]).trim();
+  const owner = parts.length > 1 ? parts[0].trim() : null;
+  return name === repoName.toLowerCase() && (owner === null || owner === ownerLogin.toLowerCase());
+}
+
+const ONLY_LIST = parseRepoList(process.env.ONLY_REPOS);
+const EXCLUDE_LIST = parseRepoList(process.env.EXCLUDE_REPOS);
 
 function apiRequest(method, path, body = null) {
   return new Promise((resolve, reject) => {
@@ -68,14 +80,29 @@ async function main() {
 
   if (DRY_RUN) console.log("🔍 DRY RUN MODE\n");
   if (FORCE_SYNC) console.log("⚡ FORCE SYNC enabled\n");
+  if (ONLY_LIST.length > 0) console.log(`🎯 Only syncing: ${ONLY_LIST.join(", ")}\n`);
   if (EXCLUDE_LIST.length > 0) console.log(`🚫 Excluded: ${EXCLUDE_LIST.join(", ")}\n`);
 
   console.log("📡 Fetching all forks...");
-  const forks = await getAllForks();
-  console.log(`✅ Found ${forks.length} fork(s)\n`);
+  const allForks = await getAllForks();
+  console.log(`✅ Found ${allForks.length} fork(s)\n`);
+
+  let forks = allForks;
+  if (ONLY_LIST.length > 0) {
+    forks = allForks.filter((fork) =>
+      ONLY_LIST.some((entry) => matchesRepo(entry, fork.name, fork.owner.login))
+    );
+    const unmatched = ONLY_LIST.filter(
+      (entry) => !forks.some((fork) => matchesRepo(entry, fork.name, fork.owner.login))
+    );
+    console.log(`🎯 Matched ${forks.length} specified fork(s)\n`);
+    if (unmatched.length > 0) console.log(`⚠️  No matching fork for: ${unmatched.join(", ")}\n`);
+  }
 
   if (forks.length === 0) {
-    console.log("ℹ️  No forks found. Nothing to sync.");
+    console.log(ONLY_LIST.length > 0
+      ? "ℹ️  No matching forks. Nothing to sync."
+      : "ℹ️  No forks found. Nothing to sync.");
     process.exit(0);
   }
 
@@ -84,7 +111,7 @@ async function main() {
   for (const fork of forks) {
     const { name: repoName, owner: { login: ownerLogin }, default_branch: defaultBranch } = fork;
 
-    if (EXCLUDE_LIST.includes(repoName.toLowerCase())) {
+    if (EXCLUDE_LIST.some((entry) => matchesRepo(entry, repoName, ownerLogin))) {
       console.log(`⏭  [EXCLUDED]   ${ownerLogin}/${repoName}`);
       results.skipped.push(repoName);
       continue;
