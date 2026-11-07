@@ -32,6 +32,7 @@ Go to **GitHub → Settings → Developer Settings → Personal Access Tokens �
 - Permissions:
   - `Contents` → Read and Write
   - `Pull requests` → Read and Write (needed to create PRs for diverged forks)
+  - `Workflows` → Read and Write (optional; allows a fast-forward to include `.github/workflows/*` changes)
   - `Actions` → Read and Write
   - `Metadata` → Read only
 
@@ -87,9 +88,26 @@ Your commits are never overwritten and never merged automatically — you decide
 | `⏫ [AHEAD ONLY]` | Fork has own commits but upstream has nothing new to pull |
 | `🛑 [AUTO MERGE]` | Unexpected: GitHub merged despite the pre-check — inspect manually |
 | `⚠️ [CONFLICT]` | Real merge conflict (HTTP 409); a PR is created for manual resolution |
+| `🚧 [BLOCKED]` | Fast-forward refused because the PAT cannot push workflow files; falls back to a PR |
 | `⏭ [SKIPPED]` / `[EXCLUDED]` | Skipped by API, unknown compare status, or exclusion list |
 | `❌ [ERROR]` | API error |
 | `🔍 [WOULD SYNC]` / `[WOULD PR]` | Dry-run preview |
+
+---
+
+## Troubleshooting
+
+### `❌ HTTP 403: Resource not accessible by personal access token` when creating a PR
+
+The token can read the fork but cannot open pull requests on it. Grant **`Pull requests` → Read and Write** (and keep `Contents` → Read and Write). For a classic PAT, make sure the `repo` / `public_repo` scopes are enabled. Fine-grained token permission changes take effect immediately; a classic token must be regenerated and the `PAT_TOKEN` secret updated.
+
+### `⏭ ... refusing to allow a Personal Access Token to create or update workflow ... without workflow scope`
+
+A fast-forward would write `.github/workflows/*` files, which GitHub blocks for tokens without workflow permission. Either grant **`Workflows` → Read and Write** (fine-grained) / the `workflow` scope (classic PAT), or leave it as-is: fork-manager logs `🚧 [BLOCKED]` and opens a pull request instead, which does not push workflow files.
+
+### `❌ HTTP 403` on organization-owned forks
+
+A fine-grained PAT only covers repositories its owner can administer. Forks under other organizations can be returned by `/user/repos` yet still reject writes with 403. Exclude them with `exclude_repos` or `PERMANENT_EXCLUDES`.
 
 ---
 

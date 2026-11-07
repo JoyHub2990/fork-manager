@@ -98,7 +98,9 @@ async function compareWithUpstream(ownerLogin, repoName, forkBranch, upstream) {
 async function findOpenPull(ownerLogin, repoName, forkBranch, head) {
   const path = `/repos/${ownerLogin}/${repoName}/pulls?state=open&head=${encodeURIComponent(head)}&base=${encodeURIComponent(forkBranch)}&per_page=1`;
   const res = await apiRequest("GET", path);
-  if (res.status !== 200) throw new Error(`Failed to list pull requests: HTTP ${res.status} ${res.body?.message || ""}`);
+  if (res.status !== 200) {
+    throw new Error(`Failed to list pull requests: HTTP ${res.status} ${res.body?.message || ""} (check "Pull requests: read" on the PAT)`);
+  }
   return Array.isArray(res.body) && res.body.length > 0 ? res.body[0] : null;
 }
 
@@ -133,8 +135,27 @@ async function ensurePullRequest(ownerLogin, repoName, forkBranch, head, results
     console.log(`🔀 [PR CREATED]  ${ownerLogin}/${repoName} — #${res.body.number} ${res.body.html_url}`);
     (overrideBucket || results.prCreated).push(repoName);
   } else if (res.status === 422) {
-    console.log(`⏭  [SKIPPED]    ${ownerLogin}/${repoName} — ${res.body?.message || "PR could not be created"}`);
+    const msg = res.body?.message || "PR could not be created";
+    if (/already exists/i.test(msg)) {
+      const pr = await findOpenPull(ownerLogin, repoName, forkBranch, head);
+      if (pr) {
+        console.log(`🔁 [PR EXISTS]   ${ownerLogin}/${repoName} — #${pr.number} ${pr.html_url}`);
+        (overrideBucket || results.prExisting).push(repoName);
+        return;
+      }
+    }
+    console.log(`⏭  [SKIPPED]    ${ownerLogin}/${repoName} — ${msg}`);
     results.skipped.push(repoName);
+  } else if (res.status === 403) {
+    let hint = 'PAT lacks PR write access: fine-grained needs "Pull requests: Read and Write" + access to this repo; classic needs "repo" scope (regenerate token and update the PAT_TOKEN secret)';
+    try {
+      const check = await apiRequest("GET", `/repos/${ownerLogin}/${repoName}`);
+      if (check.status === 200 && check.body?.permissions?.push === false) {
+        hint = 'PAT has no push access to this repo — set Repository access to "All repositories" (or add this repo), then re-run';
+      }
+    } catch {}
+    console.log(`❌ [ERROR]      ${ownerLogin}/${repoName} — HTTP 403: ${res.body?.message || ""} — ${hint}`);
+    results.errors.push(repoName);
   } else {
     console.log(`❌ [ERROR]      ${ownerLogin}/${repoName} — HTTP ${res.status}: ${res.body?.message || ""}`);
     results.errors.push(repoName);
@@ -157,7 +178,8 @@ async function main() {
   if (ONLY_LIST.length > 0) console.log(`🎯 Only syncing: ${ONLY_LIST.join(", ")}\n`);
   if (EXCLUDE_LIST.length > 0) console.log(`🚫 Excluded: ${EXCLUDE_LIST.join(", ")}\n`);
   console.log("Legend: ⏩ fast-forward  🔀 PR created  🔁 PR already open  ✅ up to date");
-  console.log("        ⏫ ahead only  🛑 unexpected merge  ⚠️  merge conflict  ⏭  skipped  ❌ error\n");
+  console.log("        ⏫ ahead only  🛑 unexpected merge  ⚠️  merge conflict  🚧 workflow blocked");
+  console.log("        ⏭  skipped  ❌ error\n");
 
   console.log("📡 Fetching all forks...");
   const allForks = await getAllForks();
@@ -241,8 +263,14 @@ async function main() {
           console.log(`⚠️  [CONFLICT]   ${repoLabel} — merge conflict, falling back to a pull request`);
           await ensurePullRequest(ownerLogin, repoName, forkBranch, head, results, results.conflicts);
         } else if (res.status === 422) {
-          console.log(`⏭  [SKIPPED]    ${repoLabel} — ${res.body?.message || ""}`);
-          results.skipped.push(repoName);
+          const msg = res.body?.message || "";
+          if (/workflow/i.test(msg)) {
+            console.log(`🚧 [BLOCKED]    ${repoLabel} — PAT cannot push workflow files, falling back to a pull request`);
+            await ensurePullRequest(ownerLogin, repoName, forkBranch, head, results);
+          } else {
+            console.log(`⏭  [SKIPPED]    ${repoLabel} — ${msg}`);
+            results.skipped.push(repoName);
+          }
         } else {
           console.log(`❌ [ERROR]      ${repoLabel} — HTTP ${res.status}: ${res.body?.message || ""}`);
           results.errors.push(repoName);
