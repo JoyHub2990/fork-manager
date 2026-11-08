@@ -9,11 +9,12 @@ Keep every fork in your GitHub account up to date with its upstream — automati
 ## How It Works
 
 1. GitHub Actions fetches a list of **all your forked repos**
-2. For each fork, it reads the parent's default branch and **compares** it with the fork's default branch
-3. `identical`, or the fork is simply ahead → nothing to do
-4. `ahead` (fork has no own commits) → fast-forward via the `merge-upstream` API
-5. `diverged` (fork has its own commits) → **no automatic merge**. A pull request is created instead so you can review and merge manually; an existing open PR is reused
-6. A summary using a distinct symbol for each result type is printed at the end
+2. For each fork, it builds the branches to process: the default branch pair, plus any extra branch that exists under the **same name** in both the fork and its upstream
+3. Each branch is **compared** with its upstream counterpart using the same rules
+4. `identical`, or the fork is simply ahead → nothing to do
+5. `ahead` (fork has no own commits) → fast-forward via the `merge-upstream` API
+6. `diverged` (fork has its own commits) → **no automatic merge**. A pull request is created instead so you can review and merge manually; an existing open PR is reused
+7. A summary using a distinct symbol for each result type is printed at the end
 
 Everything runs server-side on GitHub — no local cloning, no git commands on your machine.
 
@@ -47,6 +48,8 @@ Go to this repo → **Settings → Secrets and variables → Actions → New rep
 ### 4. You're done
 
 The workflow runs **every day at 09:00 UTC** automatically.
+
+Optional emergency switch: create a repository variable (**Settings → Secrets and variables → Actions → Variables**) named `SYNC_ALL_BRANCHES` with value `false` to go back to default-branch-only. Extra-branch sync is enabled by default, and changing the variable takes effect on the next run without editing any file.
 
 ---
 
@@ -111,6 +114,21 @@ Despite the name, this mode never force-overwrites or discards your commits — 
 | `⏭ [SKIPPED]` | API returned 422 or an unknown compare status — no action taken; listed at the end of the log |
 | `❌ [ERROR]` | API error |
 | `🔍 [WOULD SYNC]` / `[WOULD PR]` | Dry-run preview |
+
+Extra branches are shown as `owner/repo@branch`; the default branch keeps `owner/repo`.
+
+---
+
+## Extra Branches
+
+fork-manager automatically lists branches on both sides and processes only pairs with **exactly the same branch name** — no mapping, no guessing.
+
+- The default branch is always processed, even when its name differs from upstream (e.g. fork `main` ↔ upstream `enhanced`)
+- A branch that exists only in the fork, or only upstream, is ignored
+- Branches with no common ancestor are skipped instead of being reported as errors
+- Every extra branch follows the same rules as the default branch: clean fast-forwards are synced, diverged branches get a PR, conflicting PRs are tagged
+- If `merge-upstream` rejects an extra branch, the script falls back to creating a PR instead of skipping it
+- Each extra branch adds two branch-list calls plus a compare (and possibly PR calls); requests are throttled, so a full run takes longer. Set the repository variable `SYNC_ALL_BRANCHES=false` to fall back to default-branch-only
 
 ---
 
@@ -196,9 +214,10 @@ Legend: ✅ synced  🔀 PR created  🔁 PR already open  ➖ up to date
 ⏭  API skipped:         1
 ❌ Errors:              0
 ─────────────────────────────────────────
-📦 Total processed:     47
+📦 Repos processed:     47
+📦 Branches processed:  47
 
-⏭  Repos skipped by the API (no action was taken — inspect these):
+⏭  Branches skipped by the API (no action was taken — inspect these):
    • no-upstream
 ```
 

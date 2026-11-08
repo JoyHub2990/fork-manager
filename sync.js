@@ -3,6 +3,7 @@ const https = require("https");
 const TOKEN = process.env.PAT_TOKEN;
 const DRY_RUN = process.env.DRY_RUN === "true";
 const FORCE_SYNC = process.env.FORCE_SYNC === "true";
+const SYNC_ALL_BRANCHES = process.env.SYNC_ALL_BRANCHES !== "false";
 
 function parseRepoList(value) {
   return (value || "")
@@ -67,8 +68,19 @@ async function getAllForks() {
   return forks;
 }
 
-async function syncFork(owner, repo, defaultBranch) {
-  return await apiRequest("POST", `/repos/${owner}/${repo}/merge-upstream`, { branch: defaultBranch });
+async function getBranches(owner, repo) {
+  const names = [];
+  for (let page = 1; ; page++) {
+    const res = await apiRequest("GET", `/repos/${owner}/${repo}/branches?per_page=100&page=${page}`);
+    if (res.status !== 200 || !Array.isArray(res.body)) break;
+    for (const branch of res.body) if (branch && branch.name) names.push(branch.name);
+    if (res.body.length < 100) break;
+  }
+  return names;
+}
+
+async function syncFork(owner, repo, branch) {
+  return await apiRequest("POST", `/repos/${owner}/${repo}/merge-upstream`, { branch });
 }
 
 async function getUpstream(fork) {
@@ -82,7 +94,11 @@ async function getUpstream(fork) {
   if (!parent || !parent.owner || !parent.owner.login || !parent.default_branch) {
     throw new Error("No upstream (parent) information available");
   }
-  return { owner: parent.owner.login, branch: parent.default_branch };
+  return {
+    owner: parent.owner.login,
+    repo: parent.name || (parent.full_name || "").split("/")[1] || "",
+    branch: parent.default_branch,
+  };
 }
 
 async function compareWithUpstream(ownerLogin, repoName, forkBranch, upstream) {
@@ -109,8 +125,8 @@ async function createPull(ownerLogin, repoName, forkBranch, head) {
   const body = [
     `Bring upstream changes from \`${head}\` into \`${forkBranch}\`.`,
     "",
-    "The default branch of this fork has its own commits, so fork-manager did not merge automatically.",
-    "Review the changes and merge this PR manually, or close it to leave the fork untouched.",
+    "This branch has its own commits, so fork-manager did not merge automatically.",
+    "Review the changes and merge this PR manually, or close it to leave the branch untouched.",
     "",
     "Created automatically by fork-manager.",
   ].join("\n");
@@ -123,32 +139,33 @@ async function createPull(ownerLogin, repoName, forkBranch, head) {
   });
 }
 
-async function ensurePullRequest(ownerLogin, repoName, forkBranch, head, results, overrideBucket = null) {
+async function ensurePullRequest(ownerLogin, repoName, forkBranch, head, results, overrideBucket = null, label = null) {
+  const tag = label || `${ownerLogin}/${repoName}`;
   const existing = await findOpenPull(ownerLogin, repoName, forkBranch, head);
   if (existing) {
-    console.log(`🔁 [PR EXISTS]   ${ownerLogin}/${repoName} — #${existing.number} ${existing.html_url}`);
-    (overrideBucket || results.prExisting).push(repoName);
-    await inspectPR(ownerLogin, repoName, existing, results);
+    console.log(`🔁 [PR EXISTS]   ${tag} — #${existing.number} ${existing.html_url}`);
+    (overrideBucket || results.prExisting).push(tag);
+    await inspectPR(ownerLogin, repoName, existing, results, label);
     return;
   }
   const res = await createPull(ownerLogin, repoName, forkBranch, head);
   if (res.status === 201) {
-    console.log(`🔀 [PR CREATED]  ${ownerLogin}/${repoName} — #${res.body.number} ${res.body.html_url}`);
-    (overrideBucket || results.prCreated).push(repoName);
-    await inspectPR(ownerLogin, repoName, res.body, results);
+    console.log(`🔀 [PR CREATED]  ${tag} — #${res.body.number} ${res.body.html_url}`);
+    (overrideBucket || results.prCreated).push(tag);
+    await inspectPR(ownerLogin, repoName, res.body, results, label);
   } else if (res.status === 422) {
     const msg = res.body?.message || "PR could not be created";
     if (/already exists/i.test(msg)) {
       const pr = await findOpenPull(ownerLogin, repoName, forkBranch, head);
       if (pr) {
-        console.log(`🔁 [PR EXISTS]   ${ownerLogin}/${repoName} — #${pr.number} ${pr.html_url}`);
-        (overrideBucket || results.prExisting).push(repoName);
-        await inspectPR(ownerLogin, repoName, pr, results);
+        console.log(`🔁 [PR EXISTS]   ${tag} — #${pr.number} ${pr.html_url}`);
+        (overrideBucket || results.prExisting).push(tag);
+        await inspectPR(ownerLogin, repoName, pr, results, label);
         return;
       }
     }
-    console.log(`⏭  [SKIPPED]    ${ownerLogin}/${repoName} — ${msg}`);
-    results.skipped.push(repoName);
+    console.log(`⏭  [SKIPPED]    ${tag} — ${msg}`);
+    results.skipped.push(tag);
   } else if (res.status === 403) {
     let hint = 'PAT lacks PR write access: fine-grained needs "Pull requests: Read and Write" + access to this repo; classic needs "repo" scope (regenerate token and update the PAT_TOKEN secret)';
     try {
@@ -157,11 +174,11 @@ async function ensurePullRequest(ownerLogin, repoName, forkBranch, head, results
         hint = 'PAT has no push access to this repo — set Repository access to "All repositories" (or add this repo), then re-run';
       }
     } catch {}
-    console.log(`❌ [ERROR]      ${ownerLogin}/${repoName} — HTTP 403: ${res.body?.message || ""} — ${hint}`);
-    results.errors.push(repoName);
+    console.log(`❌ [ERROR]      ${tag} — HTTP 403: ${res.body?.message || ""} — ${hint}`);
+    results.errors.push(tag);
   } else {
-    console.log(`❌ [ERROR]      ${ownerLogin}/${repoName} — HTTP ${res.status}: ${res.body?.message || ""}`);
-    results.errors.push(repoName);
+    console.log(`❌ [ERROR]      ${tag} — HTTP ${res.status}: ${res.body?.message || ""}`);
+    results.errors.push(tag);
   }
 }
 
@@ -197,17 +214,168 @@ async function labelPR(ownerLogin, repoName, prNumber) {
   return res.status === 200 || res.status === 201;
 }
 
-async function inspectPR(ownerLogin, repoName, pr, results) {
+async function inspectPR(ownerLogin, repoName, pr, results, label = null) {
   if (!pr || !pr.number) return;
+  const tag = label || `${ownerLogin}/${repoName}`;
   try {
     if ((await getPRMergeable(ownerLogin, repoName, pr.number)) !== "conflict") return;
-    console.log(`💥 [PR CONFLICT] ${ownerLogin}/${repoName} — #${pr.number} has conflicts, resolve manually ${pr.html_url || ""}`);
-    results.prConflicts.push(repoName);
+    console.log(`💥 [PR CONFLICT] ${tag} — #${pr.number} has conflicts, resolve manually ${pr.html_url || ""}`);
+    results.prConflicts.push(tag);
     const labeled = (await ensureConflictLabel(ownerLogin, repoName)) &&
       (await labelPR(ownerLogin, repoName, pr.number));
-    if (!labeled) console.log(`   ⚠️  Could not add the merge-conflict label (PAT needs "Issues: Read and Write")`);
+    if (!labeled) console.log(`   ⚠️  Could not add the merge-conflict label for ${tag} (PAT needs "Issues: Read and Write")`);
   } catch (err) {
     console.log(`   ⚠️  Could not inspect PR #${pr.number}: ${err.message}`);
+  }
+}
+
+async function buildTargets(fork, ownerLogin, repoName, upstream) {
+  const base = `${ownerLogin}/${repoName}`;
+  const defaultBranch = fork.default_branch;
+  const targets = [{
+    branch: defaultBranch,
+    upstream: { owner: upstream.owner, branch: upstream.branch },
+    head: `${upstream.owner}:${upstream.branch}`,
+    label: base,
+    isDefault: true,
+  }];
+  if (!SYNC_ALL_BRANCHES || !upstream.repo) return targets;
+
+  let forkBranches = [];
+  let upstreamBranches = [];
+  try {
+    forkBranches = await getBranches(ownerLogin, repoName);
+    await sleep(100);
+    upstreamBranches = await getBranches(upstream.owner, upstream.repo);
+  } catch (err) {
+    console.log(`ℹ️  ${base} — branch listing failed (${err.message}); extra branches skipped`);
+    return targets;
+  }
+  if (!upstreamBranches.length) {
+    console.log(`ℹ️  ${base} — upstream branch list unavailable; extra branches skipped`);
+    return targets;
+  }
+
+  const upstreamSet = new Set(upstreamBranches);
+  for (const branch of forkBranches) {
+    if (branch === defaultBranch || !upstreamSet.has(branch)) continue;
+    targets.push({
+      branch,
+      upstream: { owner: upstream.owner, branch },
+      head: `${upstream.owner}:${branch}`,
+      label: `${base}@${branch}`,
+      isDefault: false,
+    });
+  }
+  return targets;
+}
+
+async function processBranch(ownerLogin, repoName, target, results) {
+  const { branch: forkBranch, upstream, head, label: repoLabel, isDefault } = target;
+
+  if (FORCE_SYNC && !DRY_RUN) {
+    try {
+      const res = await syncFork(ownerLogin, repoName, forkBranch);
+      if (res.status === 200) {
+        const msg = res.body.message || "";
+        if (/not behind|already/i.test(msg)) {
+          console.log(`➖ [UP TO DATE] ${repoLabel} — ${msg}`);
+          results.upToDate.push(repoLabel);
+        } else if (/fetched and merged/i.test(msg) || res.body.merge_type === "merge") {
+          console.log(`🟣 [MERGED]     ${repoLabel} — ${msg}`);
+          results.merged.push(repoLabel);
+        } else {
+          console.log(`✅ [SYNCED]     ${repoLabel} — ${msg}`);
+          results.synced.push(repoLabel);
+        }
+      } else if (res.status === 409) {
+        console.log(`⚠️  [CONFLICT]   ${repoLabel} — merge conflict (legacy mode, no PR created)`);
+        results.conflicts.push(repoLabel);
+      } else if (res.status === 422) {
+        console.log(`⏭  [SKIPPED]    ${repoLabel} — ${res.body?.message || ""}`);
+        results.skipped.push(repoLabel);
+      } else {
+        console.log(`❌ [ERROR]      ${repoLabel} — HTTP ${res.status}: ${res.body?.message || ""}`);
+        results.errors.push(repoLabel);
+      }
+    } catch (err) {
+      console.log(`❌ [ERROR]      ${repoLabel} — ${err.message}`);
+      results.errors.push(repoLabel);
+    }
+    return;
+  }
+
+  try {
+    const cmp = await compareWithUpstream(ownerLogin, repoName, forkBranch, upstream);
+
+    if (DRY_RUN) {
+      if (cmp.status === "ahead") {
+        console.log(`🔍 [WOULD SYNC] ${repoLabel} — fast-forward from ${head}`);
+        results.plannedSync.push(repoLabel);
+      } else if (cmp.status === "diverged") {
+        console.log(`🔍 [WOULD PR]   ${repoLabel} — create pull request from ${head}`);
+        results.plannedPr.push(repoLabel);
+      } else {
+        console.log(`🔍 [UP TO DATE] ${repoLabel}`);
+        results.upToDate.push(repoLabel);
+      }
+    } else if (cmp.status === "identical") {
+      console.log(`➖ [UP TO DATE] ${repoLabel} — already at ${head}`);
+      results.upToDate.push(repoLabel);
+    } else if (cmp.status === "behind") {
+      console.log(`⏫ [AHEAD ONLY] ${repoLabel} — fork has own commits, nothing to pull from ${head}`);
+      results.aheadOnly.push(repoLabel);
+    } else if (cmp.status === "ahead") {
+      const res = await syncFork(ownerLogin, repoName, forkBranch);
+      if (res.status === 200) {
+        const msg = res.body.message || "";
+        const mergeType = res.body.merge_type ||
+          (/fetched and merged/i.test(msg) ? "merge" : /fast-forwarded/i.test(msg) ? "fast-forward" : "");
+        if (/not behind|already/i.test(msg) || mergeType === "none") {
+          console.log(`➖ [UP TO DATE] ${repoLabel} — ${msg}`);
+          results.upToDate.push(repoLabel);
+        } else if (mergeType === "merge") {
+          console.log(`🛑 [AUTO MERGE] ${repoLabel} — merged despite pre-check: ${msg}`);
+          results.unexpectedMerges.push(repoLabel);
+        } else {
+          console.log(`✅ [SYNCED]     ${repoLabel} — ${msg}`);
+          results.synced.push(repoLabel);
+        }
+      } else if (res.status === 409) {
+        console.log(`⚠️  [CONFLICT]   ${repoLabel} — merge conflict, falling back to a pull request`);
+        await ensurePullRequest(ownerLogin, repoName, forkBranch, head, results, results.conflicts, repoLabel);
+      } else if (res.status === 422) {
+        const msg = res.body?.message || "";
+        const blockedByWorkflow = /workflow/i.test(msg);
+        if (blockedByWorkflow || !isDefault) {
+          const reason = blockedByWorkflow
+            ? "PAT cannot push workflow files"
+            : "merge-upstream rejected this branch";
+          console.log(`🚧 [BLOCKED]    ${repoLabel} — ${reason}, falling back to a pull request`);
+          await ensurePullRequest(ownerLogin, repoName, forkBranch, head, results, null, repoLabel);
+        } else {
+          console.log(`⏭  [SKIPPED]    ${repoLabel} — ${msg}`);
+          results.skipped.push(repoLabel);
+        }
+      } else {
+        console.log(`❌ [ERROR]      ${repoLabel} — HTTP ${res.status}: ${res.body?.message || ""}`);
+        results.errors.push(repoLabel);
+      }
+    } else if (cmp.status === "diverged") {
+      console.log(`🔀 [DIVERGED]   ${repoLabel} — own commits found, no automatic merge (${head})`);
+      await ensurePullRequest(ownerLogin, repoName, forkBranch, head, results, null, repoLabel);
+    } else {
+      console.log(`⏭  [SKIPPED]    ${repoLabel} — unknown compare status: ${cmp.status}`);
+      results.skipped.push(repoLabel);
+    }
+  } catch (err) {
+    if (/no common ancestor|not found|HTTP 404/i.test(err.message)) {
+      console.log(`⏭  [SKIPPED]    ${repoLabel} — unrelated branches: ${err.message}`);
+      results.skipped.push(repoLabel);
+    } else {
+      console.log(`❌ [ERROR]      ${repoLabel} — ${err.message}`);
+      results.errors.push(repoLabel);
+    }
   }
 }
 
@@ -227,6 +395,9 @@ async function main() {
   }
   if (ONLY_LIST.length > 0) console.log(`🎯 Only syncing: ${ONLY_LIST.join(", ")}\n`);
   if (EXCLUDE_LIST.length > 0) console.log(`🚫 Excluded: ${EXCLUDE_LIST.join(", ")}\n`);
+  console.log(SYNC_ALL_BRANCHES
+    ? "🌿 Extra branches: enabled (same-name branches only)\n"
+    : "🌿 Extra branches: disabled (default branch only)\n");
   console.log("Legend: ✅ synced  🔀 PR created  🔁 PR already open  ➖ up to date");
   console.log("        ⏫ ahead only  🛑 unexpected merge  ⚠️  merge conflict  🚧 workflow blocked");
   console.log("        🟣 merged (legacy mode)  💥 conflicting PR  ⏭  excluded/skipped  ❌ error\n");
@@ -259,117 +430,50 @@ async function main() {
     unexpectedMerges: [], merged: [], conflicts: [], prConflicts: [], excluded: [], skipped: [], errors: [],
     plannedSync: [], plannedPr: [],
   };
+  let processedBranches = 0;
 
   for (const fork of forks) {
-    const { name: repoName, owner: { login: ownerLogin }, default_branch: forkBranch } = fork;
+    const { name: repoName, owner: { login: ownerLogin }, default_branch: defaultBranch } = fork;
     const repoLabel = `${ownerLogin}/${repoName}`;
 
     if (EXCLUDE_LIST.some((entry) => matchesRepo(entry, repoName, ownerLogin))) {
       console.log(`⏭  [EXCLUDED]   ${repoLabel}`);
-      results.excluded.push(repoName);
+      results.excluded.push(repoLabel);
       await sleep(300);
       continue;
     }
 
-    if (FORCE_SYNC && !DRY_RUN) {
-      try {
-        const res = await syncFork(ownerLogin, repoName, forkBranch);
-        if (res.status === 200) {
-          const msg = res.body.message || "";
-          if (/not behind|already/i.test(msg)) {
-            console.log(`➖ [UP TO DATE] ${repoLabel} — ${msg}`);
-            results.upToDate.push(repoName);
-          } else if (/fetched and merged/i.test(msg) || res.body.merge_type === "merge") {
-            console.log(`🟣 [MERGED]     ${repoLabel} — ${msg}`);
-            results.merged.push(repoName);
-          } else {
-            console.log(`✅ [SYNCED]     ${repoLabel} — ${msg}`);
-            results.synced.push(repoName);
-          }
-        } else if (res.status === 409) {
-          console.log(`⚠️  [CONFLICT]   ${repoLabel} — merge conflict (legacy mode, no PR created)`);
-          results.conflicts.push(repoName);
-        } else if (res.status === 422) {
-          console.log(`⏭  [SKIPPED]    ${repoLabel} — ${res.body?.message || ""}`);
-          results.skipped.push(repoName);
-        } else {
-          console.log(`❌ [ERROR]      ${repoLabel} — HTTP ${res.status}: ${res.body?.message || ""}`);
-          results.errors.push(repoName);
-        }
-      } catch (err) {
-        console.log(`❌ [ERROR]      ${repoLabel} — ${err.message}`);
-        results.errors.push(repoName);
-      }
-      await sleep(300);
-      continue;
-    }
-
+    let upstream = null;
     try {
-      const upstream = await getUpstream(fork);
-      const head = `${upstream.owner}:${upstream.branch}`;
-      const cmp = await compareWithUpstream(ownerLogin, repoName, forkBranch, upstream);
-
-      if (DRY_RUN) {
-        if (cmp.status === "ahead") {
-          console.log(`🔍 [WOULD SYNC] ${repoLabel} — fast-forward from ${head}`);
-          results.plannedSync.push(repoName);
-        } else if (cmp.status === "diverged") {
-          console.log(`🔍 [WOULD PR]   ${repoLabel} — create pull request from ${head}`);
-          results.plannedPr.push(repoName);
-        } else {
-          console.log(`🔍 [UP TO DATE] ${repoLabel}`);
-          results.upToDate.push(repoName);
-        }
-      } else if (cmp.status === "identical") {
-        console.log(`➖ [UP TO DATE] ${repoLabel} — already at ${head}`);
-        results.upToDate.push(repoName);
-      } else if (cmp.status === "behind") {
-        console.log(`⏫ [AHEAD ONLY] ${repoLabel} — fork has own commits, nothing to pull from ${head}`);
-        results.aheadOnly.push(repoName);
-      } else if (cmp.status === "ahead") {
-        const res = await syncFork(ownerLogin, repoName, forkBranch);
-        if (res.status === 200) {
-          const msg = res.body.message || "";
-          const mergeType = res.body.merge_type ||
-            (/fetched and merged/i.test(msg) ? "merge" : /fast-forwarded/i.test(msg) ? "fast-forward" : "");
-          if (/not behind|already/i.test(msg) || mergeType === "none") {
-            console.log(`➖ [UP TO DATE] ${repoLabel} — ${msg}`);
-            results.upToDate.push(repoName);
-          } else if (mergeType === "merge") {
-            console.log(`🛑 [AUTO MERGE] ${repoLabel} — merged despite pre-check: ${msg}`);
-            results.unexpectedMerges.push(repoName);
-          } else {
-            console.log(`✅ [SYNCED]     ${repoLabel} — ${msg}`);
-            results.synced.push(repoName);
-          }
-        } else if (res.status === 409) {
-          console.log(`⚠️  [CONFLICT]   ${repoLabel} — merge conflict, falling back to a pull request`);
-          await ensurePullRequest(ownerLogin, repoName, forkBranch, head, results, results.conflicts);
-        } else if (res.status === 422) {
-          const msg = res.body?.message || "";
-          if (/workflow/i.test(msg)) {
-            console.log(`🚧 [BLOCKED]    ${repoLabel} — PAT cannot push workflow files, falling back to a pull request`);
-            await ensurePullRequest(ownerLogin, repoName, forkBranch, head, results);
-          } else {
-            console.log(`⏭  [SKIPPED]    ${repoLabel} — ${msg}`);
-            results.skipped.push(repoName);
-          }
-        } else {
-          console.log(`❌ [ERROR]      ${repoLabel} — HTTP ${res.status}: ${res.body?.message || ""}`);
-          results.errors.push(repoName);
-        }
-      } else if (cmp.status === "diverged") {
-        console.log(`🔀 [DIVERGED]   ${repoLabel} — own commits found, no automatic merge (${head})`);
-        await ensurePullRequest(ownerLogin, repoName, forkBranch, head, results);
-      } else {
-        console.log(`⏭  [SKIPPED]    ${repoLabel} — unknown compare status: ${cmp.status}`);
-        results.skipped.push(repoName);
-      }
+      upstream = await getUpstream(fork);
     } catch (err) {
-      console.log(`❌ [ERROR]      ${repoLabel} — ${err.message}`);
-      results.errors.push(repoName);
+      if (FORCE_SYNC && !DRY_RUN) {
+        console.log(`ℹ️  ${repoLabel} — upstream info unavailable (${err.message}); only default branch`);
+      } else {
+        console.log(`❌ [ERROR]      ${repoLabel} — ${err.message}`);
+        results.errors.push(repoLabel);
+        await sleep(300);
+        continue;
+      }
     }
-    await sleep(300);
+
+    const targets = upstream
+      ? await buildTargets(fork, ownerLogin, repoName, upstream)
+      : [{
+          branch: defaultBranch,
+          upstream: { owner: "", branch: "" },
+          head: "",
+          label: repoLabel,
+          isDefault: true,
+        }];
+    if (targets.length > 1) {
+      console.log(`🌿 ${repoLabel} — ${targets.length - 1} extra branch(es) matched by name`);
+    }
+    for (const target of targets) {
+      processedBranches++;
+      await processBranch(ownerLogin, repoName, target, results);
+      await sleep(300);
+    }
   }
 
   console.log("\n╔════════════════════════════════════════╗");
@@ -393,16 +497,17 @@ async function main() {
   console.log(`⏭  API skipped:         ${results.skipped.length}`);
   console.log(`❌ Errors:              ${results.errors.length}`);
   console.log(`─────────────────────────────────────────`);
-  console.log(`📦 Total processed:     ${forks.length}`);
+  console.log(`📦 Repos processed:     ${forks.length}`);
+  console.log(`📦 Branches processed:  ${processedBranches}`);
 
   if (results.unexpectedMerges.length > 0) {
-    console.log(`\n🛑 Repos GitHub merged automatically despite the pre-check (inspect these):`);
+    console.log(`\n🛑 Branches GitHub merged automatically despite the pre-check (inspect these):`);
     results.unexpectedMerges.forEach((r) => console.log(`   • ${r}`));
   }
   if (results.conflicts.length > 0) {
     console.log(FORCE_SYNC
-      ? `\n⚠️  Repos with a real merge conflict (legacy mode — resolve manually):`
-      : `\n⚠️  Repos with a real merge conflict (a PR was created for manual resolution):`);
+      ? `\n⚠️  Branches with a real merge conflict (legacy mode — resolve manually):`
+      : `\n⚠️  Branches with a real merge conflict (a PR was created for manual resolution):`);
     results.conflicts.forEach((r) => console.log(`   • ${r}`));
   }
   if (results.prConflicts.length > 0) {
@@ -410,11 +515,11 @@ async function main() {
     results.prConflicts.forEach((r) => console.log(`   • ${r}`));
   }
   if (results.skipped.length > 0) {
-    console.log(`\n⏭  Repos skipped by the API (no action was taken — inspect these):`);
+    console.log(`\n⏭  Branches skipped by the API (no action was taken — inspect these):`);
     results.skipped.forEach((r) => console.log(`   • ${r}`));
   }
   if (results.errors.length > 0) {
-    console.log(`\n❌ Failed repos:`);
+    console.log(`\n❌ Failed branches:`);
     results.errors.forEach((r) => console.log(`   • ${r}`));
     process.exit(1);
   }

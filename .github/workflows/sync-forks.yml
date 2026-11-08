@@ -50,6 +50,7 @@ jobs:
           EXCLUDE_REPOS: ${{ inputs.exclude_repos }}
           ONLY_REPOS: ${{ inputs.only_repos }}
           PERMANENT_EXCLUDES: ""
+          SYNC_ALL_BRANCHES: ${{ vars.SYNC_ALL_BRANCHES || 'true' }}
         run: |
           if [ -n "$PERMANENT_EXCLUDES" ] && [ -n "$EXCLUDE_REPOS" ]; then
             export EXCLUDE_REPOS="$PERMANENT_EXCLUDES,$EXCLUDE_REPOS"
