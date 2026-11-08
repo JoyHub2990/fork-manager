@@ -21,7 +21,7 @@ on:
         default: ""
 
   schedule:
-    - cron: "0 9 * * *"
+    - cron: "3,13,23,33,43,53 * * * *"
 
   repository_dispatch:
     types: [sync-forks]
@@ -53,7 +53,7 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
           FORCE_SYNC: ${{ inputs.force_sync || 'false' }}
           EXCLUDE_REPOS: ${{ inputs.exclude_repos }}
-          ONLY_REPOS: ${{ inputs.only_repos }}
+          ONLY_REPOS: ${{ inputs.only_repos || 'JoyHub2990/CodeWalkerEE' }}
           PERMANENT_EXCLUDES: ""
           SYNC_ALL_BRANCHES: ${{ vars.SYNC_ALL_BRANCHES || 'true' }}
         run: |
