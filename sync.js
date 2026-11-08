@@ -5,6 +5,26 @@ const DRY_RUN = process.env.DRY_RUN === "true";
 const FORCE_SYNC = process.env.FORCE_SYNC === "true";
 const SYNC_ALL_BRANCHES = process.env.SYNC_ALL_BRANCHES !== "false";
 
+// A fine-grained PAT is tied to one resource owner, so forks under an
+// organization need their own token. OWNER_TOKENS maps an owner to the NAME of
+// the env var holding its token (never the token itself), e.g.
+// {"JoyHub2990":"PAT_TOKEN_ORG"}. Owners not in the map use PAT_TOKEN.
+const ownerTokens = new Map();
+try {
+  const mapping = JSON.parse(process.env.OWNER_TOKENS || "{}");
+  for (const [owner, envName] of Object.entries(mapping)) {
+    const token = process.env[envName];
+    if (token) ownerTokens.set(owner.toLowerCase(), token);
+    else console.log(`⚠️  Owner token for ${owner}: ${envName} is not set; falling back to PAT_TOKEN`);
+  }
+} catch (err) {
+  console.log(`⚠️  OWNER_TOKENS is not valid JSON (${err.message}); falling back to PAT_TOKEN for every owner`);
+}
+let activeToken = TOKEN;
+function tokenForOwner(owner) {
+  return ownerTokens.get((owner || "").toLowerCase()) || TOKEN;
+}
+
 function parseRepoList(value) {
   return (value || "")
     .split(",")
@@ -29,7 +49,7 @@ function apiRequest(method, path, body = null) {
       path,
       method,
       headers: {
-        Authorization: `Bearer ${TOKEN}`,
+        Authorization: `Bearer ${activeToken}`,
         "User-Agent": "fork-manager-bot",
         Accept: "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
@@ -398,6 +418,9 @@ async function main() {
   console.log(SYNC_ALL_BRANCHES
     ? "🌿 Extra branches: enabled (same-name branches only)\n"
     : "🌿 Extra branches: disabled (default branch only)\n");
+  if (ownerTokens.size > 0) {
+    console.log(`🔑 Owner-specific tokens: ${[...ownerTokens.keys()].join(", ")}\n`);
+  }
   console.log("Legend: ✅ synced  🔀 PR created  🔁 PR already open  ➖ up to date");
   console.log("        ⏫ ahead only  🛑 unexpected merge  ⚠️  merge conflict  🚧 workflow blocked");
   console.log("        🟣 merged (legacy mode)  💥 conflicting PR  ⏭  excluded/skipped  ❌ error\n");
@@ -442,6 +465,8 @@ async function main() {
       await sleep(300);
       continue;
     }
+
+    activeToken = tokenForOwner(ownerLogin);
 
     let upstream = null;
     try {

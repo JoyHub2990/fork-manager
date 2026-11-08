@@ -20,6 +20,7 @@ Keep every fork in your GitHub account up to date with its upstream — automati
 - [Log Symbols](#log-symbols)
 - [Default Branch vs Extra Branches](#default-branch-vs-extra-branches)
 - [Troubleshooting](#troubleshooting)
+- [Organization-Owned Forks](#organization-owned-forks)
 - [Only Syncing Specific Repos](#only-syncing-specific-repos)
 - [Excluding Repos Permanently](#excluding-repos-permanently)
 - [Output Example](#output-example)
@@ -65,6 +66,8 @@ Go to this repo → **Settings → Secrets and variables → Actions → New rep
 
 - Name: `PAT_TOKEN`
 - Value: your token from step 2
+
+If you also have forks under an organization, add a second fine-grained token for that owner as another secret — see [Organization-Owned Forks](#organization-owned-forks).
 
 ### 4. You're done
 
@@ -243,7 +246,54 @@ A fast-forward would write `.github/workflows/*` files, which GitHub blocks for 
 
 ### `❌ HTTP 403` on organization-owned forks
 
-A fine-grained PAT only covers repositories its owner can administer. Forks under other organizations can be returned by `/user/repos` yet still reject writes with 403. Exclude them with `exclude_repos` or `PERMANENT_EXCLUDES`.
+A fine-grained PAT is tied to a single resource owner. Forks under another owner can be returned by `/user/repos` yet still reject writes with 403. Add an owner-specific token (see [Organization-Owned Forks](#organization-owned-forks)), use a classic PAT (broader access), or exclude them with `exclude_repos` / `PERMANENT_EXCLUDES`.
+
+---
+
+## Organization-Owned Forks
+
+A fine-grained PAT can only access resources owned by the **one** Resource owner selected when it was created. If your forks live under several owners (for example `lucienlmy` and the `JoyHub2990` organization), forks under the other owner appear in `/user/repos` but every write fails with `HTTP 403: Resource not accessible by personal access token`. The fix is one extra token per owner: the script picks the token by the fork's owner, so no repository has to be moved and the workflow stays where it is.
+
+### 1. Create a second fine-grained token
+
+Go to **GitHub → Settings → Developer Settings → Personal Access Tokens → Fine-grained tokens → Generate new token**:
+
+- Resource owner: select the **organization** (e.g. `JoyHub2990`)
+- Repository access: `All repositories` (of that organization), or `Only select repositories`
+- Permissions: the same set as the main token — `Contents` RW, `Pull requests` RW, `Issues` RW (for the `merge-conflict` label), `Actions` RW, `Workflows` RW, `Metadata` RO
+- Set an expiration
+
+If you own the organization the approval is granted automatically; otherwise an organization admin must approve the request. If the organization blocks fine-grained tokens, allow them in its personal access token policy.
+
+### 2. Store it as a secret
+
+In this repo → **Settings → Secrets and variables → Actions → New repository secret**:
+
+- Name: `PAT_TOKEN_ORG`
+- Value: the organization token
+
+The workflow already passes it as an env var and ships a default mapping:
+
+```yaml
+PAT_TOKEN_ORG: ${{ secrets.PAT_TOKEN_ORG }}
+OWNER_TOKENS: ${{ vars.OWNER_TOKENS || '{"JoyHub2990":"PAT_TOKEN_ORG"}' }}
+```
+
+`OWNER_TOKENS` is a JSON object mapping an owner name to the **name of the env var holding its token** — never the token value itself, so it is safe to keep in a repository variable. Matching is case-insensitive. Owners not listed use `PAT_TOKEN`.
+
+### 3. Verify
+
+The run log prints `🔑 Owner-specific tokens: joyhub2990` at startup. Forks under that owner then use the organization token for `getUpstream`, compare, `merge-upstream`, PRs and labels; every other fork keeps using `PAT_TOKEN`. The fork list (`/user/repos`) is always fetched with the main token, and reading a public upstream works with either token because fine-grained tokens include read-only access to all public repositories.
+
+### Adding more owners
+
+Add another secret as an env var in `.github/workflows/sync-forks.yml` (e.g. `PAT_TOKEN_ORG2: ${{ secrets.PAT_TOKEN_ORG2 }}`), then set the repository variable `OWNER_TOKENS` to override the default:
+
+```
+{"JoyHub2990":"PAT_TOKEN_ORG","GlossMod":"PAT_TOKEN_ORG2"}
+```
+
+Missing or invalid configuration only prints a warning — the run falls back to `PAT_TOKEN` instead of failing.
 
 ---
 

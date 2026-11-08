@@ -23,6 +23,9 @@ on:
   schedule:
     - cron: "0 9 * * *"
 
+  repository_dispatch:
+    types: [sync-forks]
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -44,6 +47,8 @@ jobs:
       - name: Run fork sync
         env:
           PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+          PAT_TOKEN_ORG: ${{ secrets.PAT_TOKEN_ORG }}
+          OWNER_TOKENS: ${{ vars.OWNER_TOKENS || '{"JoyHub2990":"PAT_TOKEN_ORG"}' }}
           GH_USERNAME: ${{ github.actor }}
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
           FORCE_SYNC: ${{ inputs.force_sync || 'false' }}

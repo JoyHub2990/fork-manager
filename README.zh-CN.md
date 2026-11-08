@@ -20,6 +20,7 @@
 - [日志符号](#日志符号)
 - [默认分支与额外分支](#默认分支与额外分支)
 - [故障排查](#故障排查)
+- [组织仓库同步](#组织仓库同步)
 - [只同步指定仓库](#只同步指定仓库)
 - [永久排除仓库](#永久排除仓库)
 - [输出示例](#输出示例)
@@ -65,6 +66,8 @@
 
 - Name：`PAT_TOKEN`
 - Value：第 2 步得到的令牌
+
+如果组织下也有 fork，需要再建一个以该组织为 Resource owner 的细粒度令牌，并添加为另一个 secret —— 参见[组织仓库同步](#组织仓库同步)。
 
 ### 4. 完成
 
@@ -243,7 +246,54 @@ PR 创建（或复用已有 PR）后，fork-manager 会轮询 `GET /repos/{owner
 
 ### 组织所属 fork 上出现 `❌ HTTP 403`
 
-细粒度 PAT 只覆盖其拥有者能管理的仓库。其他组织下的 fork 可能出现在 `/user/repos` 结果里，但写入时仍返回 403。可用 `exclude_repos` 或 `PERMANENT_EXCLUDES` 排除它们。
+细粒度 PAT 只能绑定一个 Resource owner。其他 owner 下的 fork 可能出现在 `/user/repos` 结果里，但写入时仍返回 403。可以添加一个按 owner 生效的令牌（参见[组织仓库同步](#组织仓库同步)）、改用权限面更大的 classic PAT，或用 `exclude_repos` / `PERMANENT_EXCLUDES` 排除它们。
+
+---
+
+## 组织仓库同步
+
+细粒度 PAT 只能访问创建时选定的**那一个** Resource owner 名下的资源。如果你的 fork 分散在多个 owner 下（例如个人账号 `lucienlmy` 和组织 `JoyHub2990`），另一个 owner 下的 fork 会出现在 `/user/repos` 里，但每次写入都会报 `HTTP 403: Resource not accessible by personal access token`。解决办法是给每个 owner 各配一个令牌：脚本按 fork 的 owner 自动选择，不需要搬迁任何仓库，workflow 也留在原处。
+
+### 1. 创建第二个细粒度令牌
+
+进入 **GitHub → Settings → Developer Settings → Personal Access Tokens → Fine-grained tokens → Generate new token**：
+
+- Resource owner：选**那个组织**（例如 `JoyHub2990`）
+- Repository access：`All repositories`（该组织下全部）或 `Only select repositories`
+- 权限与主令牌相同：`Contents` RW、`Pull requests` RW、`Issues` RW（用于 `merge-conflict` 标签）、`Actions` RW、`Workflows` RW、`Metadata` RO
+- 设置过期时间
+
+如果你是该组织的 owner，审批会自动通过；否则需要组织管理员批准。若组织禁用了细粒度令牌，需在组织的 personal access token 策略里放行。
+
+### 2. 添加为 Secret
+
+在本仓库 → **Settings → Secrets and variables → Actions → New repository secret**：
+
+- Name：`PAT_TOKEN_ORG`
+- Value：组织令牌
+
+workflow 已经把它作为环境变量传入，并带有一个默认映射：
+
+```yaml
+PAT_TOKEN_ORG: ${{ secrets.PAT_TOKEN_ORG }}
+OWNER_TOKENS: ${{ vars.OWNER_TOKENS || '{"JoyHub2990":"PAT_TOKEN_ORG"}' }}
+```
+
+`OWNER_TOKENS` 是一个 JSON 对象，把 owner 名映射到**存放令牌的环境变量名**，而不是令牌值本身，因此可以安全地放在 Repository variable 里。匹配不区分大小写；未列出的 owner 使用 `PAT_TOKEN`。
+
+### 3. 验证
+
+运行日志开头会打印 `🔑 Owner-specific tokens: joyhub2990`。该 owner 下的 fork 随后会用组织令牌执行 `getUpstream`、compare、`merge-upstream`、PR 和标签操作；其余 fork 仍用 `PAT_TOKEN`。fork 列表（`/user/repos`）始终用主令牌获取；读取公开上游仓库用哪个令牌都可以，因为细粒度令牌自带对所有公开仓库的只读权限。
+
+### 添加更多 owner
+
+在 `.github/workflows/sync-forks.yml` 的 env 里再加一行（例如 `PAT_TOKEN_ORG2: ${{ secrets.PAT_TOKEN_ORG2 }}`），然后设置 Repository variable `OWNER_TOKENS` 覆盖默认值：
+
+```
+{"JoyHub2990":"PAT_TOKEN_ORG","GlossMod":"PAT_TOKEN_ORG2"}
+```
+
+配置缺失或 JSON 写错只会打印警告，运行会回退到 `PAT_TOKEN`，不会中断。
 
 ---
 
