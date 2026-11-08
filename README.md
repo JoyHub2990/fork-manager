@@ -1,8 +1,29 @@
 # 🔄 fork-manager
 
-> One-tap sync for all your GitHub forks. Built by [ModelNorth](https://modelnorth.com).
+**Language / 语言**: English · [切换到简体中文](README.zh-CN.md)
+
+> One-tap sync for all your GitHub forks. Built by [ModelNorth](https://modelnorth.com). Maintained by [lucienlmy](https://github.com/lucienlmy).
 
 Keep every fork in your GitHub account up to date with its upstream — automatically on a schedule, or manually with a single button click.
+
+---
+
+## Table of Contents
+
+- [How It Works](#how-it-works)
+- [Setup](#setup)
+- [Scheduled Runs](#scheduled-runs)
+- [Manual Trigger](#manual-trigger)
+- [SYNC_ALL_BRANCHES Variable](#sync_all_branches-variable)
+- [Why Diverged Forks Get a PR](#why-diverged-forks-get-a-pr)
+- [Legacy Sync Mode (`force_sync`)](#legacy-sync-mode-force_sync)
+- [Log Symbols](#log-symbols)
+- [Default Branch vs Extra Branches](#default-branch-vs-extra-branches)
+- [Troubleshooting](#troubleshooting)
+- [Only Syncing Specific Repos](#only-syncing-specific-repos)
+- [Excluding Repos Permanently](#excluding-repos-permanently)
+- [Output Example](#output-example)
+- [License](#license)
 
 ---
 
@@ -47,9 +68,28 @@ Go to this repo → **Settings → Secrets and variables → Actions → New rep
 
 ### 4. You're done
 
-The workflow runs **every day at 09:00 UTC** automatically.
+The workflow runs **every day at 09:00 UTC (17:00 Beijing time)** automatically — see [Scheduled Runs](#scheduled-runs).
 
-Optional emergency switch: create a repository variable (**Settings → Secrets and variables → Actions → Variables**) named `SYNC_ALL_BRANCHES` with value `false` to go back to default-branch-only. Extra-branch sync is enabled by default, and changing the variable takes effect on the next run without editing any file.
+Extra-branch sync is enabled by default. To switch back to default-branch-only, see [SYNC_ALL_BRANCHES Variable](#sync_all_branches-variable).
+
+---
+
+## Scheduled Runs
+
+The schedule lives in `.github/workflows/sync-forks.yml`:
+
+```yaml
+on:
+  schedule:
+    - cron: "0 9 * * *"
+```
+
+- `0 9 * * *` = **09:00 UTC every day**, weekends included. GitHub always interprets cron in UTC, not your account timezone, so for UTC+8 that is **17:00 Beijing time**.
+- GitHub executes the workflow file on the repository's **default branch**. Push workflow changes to that branch before they take effect.
+- This is the earliest trigger time, not an exact guarantee: scheduled jobs are queued during peak load and commonly start a few minutes late, occasionally much later.
+- On a `schedule` event all `workflow_dispatch` inputs are empty. `dry_run` and `force_sync` resolve to `false`, `only_repos` / `exclude_repos` are empty, so the run performs real writes over all forks using the normal PR flow.
+- GitHub may disable the schedule after 60 days of repository inactivity; re-enable it from the Actions page if runs stop appearing.
+- To change the hour you must edit the `cron` line — `on:` cannot read `vars.*` or `inputs.*`. A fixed high-frequency cron plus a runtime gate and a repository variable is the alternative if you want the hour configurable from the web UI.
 
 ---
 
@@ -65,6 +105,56 @@ You'll get four options:
 | `force_sync` | Legacy mode: skip compare and PRs, call `merge-upstream` directly for every fork — GitHub may auto-merge diverged forks. Unchecked (default) uses the PR flow |
 | `exclude_repos` | Comma-separated list of repo names to skip this run |
 | `only_repos` | Comma-separated list of repos to sync (empty = all forks) |
+
+Things to know about manual runs:
+
+- The **Use workflow from** dropdown chooses which branch's `sync-forks.yml` **and** `sync.js` are executed. Use the default branch, or a branch that already contains the latest changes — an older branch without the `SYNC_ALL_BRANCHES` env line ignores the variable and always enables extra branches.
+- Repository variables are repository-wide and shared by all branches; you never set them per branch.
+- `SYNC_ALL_BRANCHES` applies to manual runs exactly as it does to scheduled runs, because `vars.*` is evaluated at job start for every trigger type. See [SYNC_ALL_BRANCHES Variable](#sync_all_branches-variable).
+- There is no per-run override for it: the four inputs above are the only manual options. Changing the variable affects every later run, so restore it afterwards if you only wanted a one-off test.
+- `only_repos` filters by **repository**, not by branch. With one repo selected, all its matching extra branches are still processed when the switch is on; there is no "run only branch `dev`" option.
+- Recommended first test: put one repo in `only_repos` and check `dry_run`. Nothing is written; confirm the `Extra branches: enabled/disabled` line at the top of the log and the `📦 Branches processed` count at the end.
+
+---
+
+## SYNC_ALL_BRANCHES Variable
+
+This optional repository variable controls whether extra (non-default) branches are synced. It is **enabled by default**; setting it to `false` falls back to default-branch-only. See [Default Branch vs Extra Branches](#default-branch-vs-extra-branches) for what the two types mean.
+
+### Where to set it
+
+Set it on **the repository that runs the workflow** (this `fork-manager` repo), not on each of your forks — `vars.*` reads the configuration of the repo where the job runs.
+
+1. Open the `fork-manager` repo → **Settings** (the repository tab, not your personal settings).
+2. Left sidebar → **Secrets and variables → Actions**.
+3. Select the **Variables** tab (not `Secrets`).
+4. Click **New repository variable**.
+5. Name `SYNC_ALL_BRANCHES`, Value `false` → **Add variable**.
+
+You need admin/settings permission on the repo. An organization-level variable of the same name also works, but a repository-level value takes precedence.
+
+### How the Variable Works
+
+```yaml
+SYNC_ALL_BRANCHES: ${{ vars.SYNC_ALL_BRANCHES || 'true' }}
+```
+
+- Evaluated at job start for **both** scheduled and manual runs; it is not a `workflow_dispatch` input.
+- If the variable does not exist, `|| 'true'` keeps extra-branch sync enabled.
+- Only the exact lowercase string `false` disables it. `FALSE`, `False`, or an empty value leave it enabled.
+- The script reads it as `process.env.SYNC_ALL_BRANCHES !== "false"`.
+
+| Value | Behaviour |
+|-------|-----------|
+| not set / `true` / anything else | Default branch + every same-name extra branch |
+| `false` | Default branch only |
+
+### Verifying and reverting
+
+- Takes effect on the **next run** — no YAML edit, no push, no redeploy.
+- The top of the log prints `Extra branches: enabled (same-name branches only)` or `Extra branches: disabled (default branch only)`.
+- The summary prints `📦 Repos processed` and `📦 Branches processed`; with the switch off, at most one branch is counted per repo.
+- To re-enable: set the value to `true`, or simply delete the variable.
 
 ---
 
@@ -119,16 +209,25 @@ Extra branches are shown as `owner/repo@branch`; the default branch keeps `owner
 
 ---
 
-## Extra Branches
+## Default Branch vs Extra Branches
 
-fork-manager automatically lists branches on both sides and processes only pairs with **exactly the same branch name** — no mapping, no guessing.
+Each fork has one **default branch** (the primary branch, taken from `fork.default_branch`) and potentially several **extra branches** (all other branches, i.e. secondary branches). Both go through the same sync logic, but they are discovered differently.
 
-- The default branch is always processed, even when its name differs from upstream (e.g. fork `main` ↔ upstream `enhanced`)
-- A branch that exists only in the fork, or only upstream, is ignored
-- Branches with no common ancestor are skipped instead of being reported as errors
-- Every extra branch follows the same rules as the default branch: clean fast-forwards are synced, diverged branches get a PR, conflicting PRs are tagged
-- If `merge-upstream` rejects an extra branch, the script falls back to creating a PR instead of skipping it
-- Each extra branch adds two branch-list calls plus a compare (and possibly PR calls); requests are throttled, so a full run takes longer. Set the repository variable `SYNC_ALL_BRANCHES=false` to fall back to default-branch-only
+| | Default branch (primary) | Extra branches (secondary) |
+|---|---|---|
+| How it is selected | Always included, one per fork | Exact **same-name** match in both the fork's and the upstream's branch lists |
+| Name must match upstream | No — fork `main` ↔ upstream `enhanced` is fine | Yes — `dev` ↔ `dev` only; no mapping, no guessing |
+| Exists on only one side | Still processed using `parent.default_branch` | Ignored — fork-only and upstream-only branches are skipped; upstream-only branches are never created in the fork |
+| Log label | `owner/repo` | `owner/repo@branch` |
+| Sync rules | compare → fast-forward, PR, or skip | **Identical** to the default branch |
+| `SYNC_ALL_BRANCHES=false` | Still synced | All skipped |
+
+Other details:
+
+- Branches with no common ancestor are skipped instead of being reported as errors.
+- Every extra branch follows the same rules as the default branch: clean fast-forwards are synced (no PR), diverged branches get a PR, conflicting PRs are tagged.
+- If `merge-upstream` rejects an extra branch, the script falls back to creating a PR instead of skipping it.
+- Enabling extra branches adds two branch-list calls per repo, plus a compare (and possibly PR calls) for every matched branch; requests are throttled, so a full run takes longer. Set `SYNC_ALL_BRANCHES=false` to fall back to default-branch-only — see [SYNC_ALL_BRANCHES Variable](#sync_all_branches-variable).
 
 ---
 
